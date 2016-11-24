@@ -1,5 +1,4 @@
-# (c) 2016, Mike Mochan <@mmochan>
-#
+#!/usr/bin/python
 # This file is part of Ansible
 #
 # Ansible is free software: you can redistribute it and/or modify
@@ -22,7 +21,9 @@ description:
     U(https://aws.amazon.com/documentation/waf/)
 version_added: "2.1"
 
-author: Mike Mochan(@mmochan)
+author:
+    - "Mike Mochan(@mmochan)"
+    - "Michael Crilly(@mrmcrilly)"
 extends_documentation_fragment: aws
 '''
 
@@ -38,7 +39,6 @@ task:
 '''
 
 try:
-    import json
     import botocore
     import boto3
     HAS_BOTO3 = True
@@ -46,13 +46,52 @@ except ImportError:
     HAS_BOTO3 = False
 
 import q
+import hashlib
+import json
 
-conditions = {'xss':  {'method': 'xss_match_set', 'matchsets': 'XssMatchSets', 'matchset': 'XssMatchSet', 'matchsetid': 'XssMatchSetId', 'matchtuple': 'XssMatchTuple', 'matchtuples': 'XssMatchTuples'},
-              'ip':   {'method': 'ip_set', 'matchsets': 'IPSets', 'matchset': 'IPSet', 'matchsetid': 'IPSetId', 'matchtuple': 'IPSetDescriptor', 'matchtuples': 'IPSetDescriptors'},
-              'byte': {'method': 'byte_match_set', 'matchsets': 'ByteMatchSets', 'matchset': 'ByteMatchSet', 'matchsetid': 'ByteMatchSetId', 'matchtuple': 'ByteMatchTuple', 'matchtuples': 'ByteMatchTuples'},
-              'size': {'method': 'size_constraint_set', 'matchsets': 'SizeConstraintSets', 'matchset': 'SizeConstraintSet', 'matchsetid': 'SizeConstraintSetId', 'matchtuple': 'SizeConstraint', 'matchtuples': 'SizeConstraints'},
-              'sql':  {'method': 'sql_injection_match_set', 'matchsets': 'SqlInjectionMatchSets', 'matchset': 'SqlInjectionMatchSet', 'matchsetid': 'SqlInjectionMatchSetId', 'matchtuple': 'SqlInjectionMatchTuple', 'matchtuples': 'SqlInjectionMatchTuples'}
-              }
+conditions = {
+    'xss': {
+        'method': 'xss_match_set',
+        'matchsets': 'XssMatchSets',
+        'matchset': 'XssMatchSet',
+        'matchsetid':
+        'XssMatchSetId',
+        'matchtuple': 'XssMatchTuple',
+        'matchtuples': 'XssMatchTuples'
+    },
+    'ip': {
+        'method': 'ip_set',
+        'matchsets': 'IPSets',
+        'matchset': 'IPSet',
+        'matchsetid': 'IPSetId',
+        'matchtuple': 'IPSetDescriptor',
+        'matchtuples': 'IPSetDescriptors'
+    },
+    'byte': {
+        'method': 'byte_match_set',
+        'matchsets': 'ByteMatchSets',
+        'matchset': 'ByteMatchSet',
+        'matchsetid': 'ByteMatchSetId',
+        'matchtuple': 'ByteMatchTuple',
+        'matchtuples': 'ByteMatchTuples'
+    },
+    'size': {
+        'method': 'size_constraint_set',
+        'matchsets': 'SizeConstraintSets',
+        'matchset': 'SizeConstraintSet',
+        'matchsetid': 'SizeConstraintSetId',
+        'matchtuple': 'SizeConstraint',
+        'matchtuples': 'SizeConstraints'
+    },
+    'sql': {
+        'method': 'sql_injection_match_set',
+        'matchsets': 'SqlInjectionMatchSets',
+        'matchset': 'SqlInjectionMatchSet',
+        'matchsetid': 'SqlInjectionMatchSetId',
+        'matchtuple': 'SqlInjectionMatchTuple',
+        'matchtuples': 'SqlInjectionMatchTuples'
+    }
+}
 
 
 class Condition():
@@ -76,33 +115,76 @@ class Condition():
 
         ### Only for ip_set
         if self.method_suffix == 'ip_set':
-            self.kwargs['Updates'].append({'Action': self.action, self.matchtuple: {}})
-            self.kwargs['Updates'][0][self.matchtuple]['Type'] = 'IPV4'
-            self.kwargs['Updates'][0][self.matchtuple]['Value'] = module.params.get('ip_address')
+            for ip in module.params.get('ip_addresses'):
+                update = {
+                    'Action': self.action,
+                    self.matchtuple: {}
+                }
+                update[self.matchtuple]['Type'] = 'IPV4'
+                update[self.matchtuple]['Value'] = ip 
+                self.kwargs['Updates'].append(update)
 
         # Common For everything but  IP_SET
         if self.method_suffix != 'ip_set':
-            self.kwargs['Updates'].append({'Action': self.action, self.matchtuple: {'FieldToMatch': {}}})
-            self.kwargs['Updates'][0][self.matchtuple]['FieldToMatch']['Type'] = module.params.get('field_match').upper()
-            self.kwargs['Updates'][0][self.matchtuple]['TextTransformation'] = module.params.get('transformation').upper()
+            self.kwargs['Updates'].append({
+                'Action': self.action,
+                self.matchtuple: {
+                    'FieldToMatch': {}
+                }
+            })
+            self.kwargs['Updates'] \
+                       [0] \
+                       [self.matchtuple] \
+                       ['FieldToMatch'] \
+                       ['Type'] = module.params.get('field_match').upper()
+
+            self.kwargs['Updates'] \
+                       [0] \
+                       [self.matchtuple] \
+                       ['TextTransformation'] \
+                       = module.params.get('transformation').upper()
         
         # Whenever HEADER is set but not for ip_set
         if self.method_suffix != 'ip_set':
             if module.params.get('field_match').upper() == "HEADER":
                 if module.params.get('header_data').lower():
-                    self.kwargs['Updates'][0][self.matchtuple]['FieldToMatch']['Data'] = module.params.get('header_data').lower()
+                    self.kwargs['Updates'] \
+                               [0][self.matchtuple] \
+                               ['FieldToMatch'] \
+                               ['Data'] \
+                               = module.params.get('header_data').lower()
                 else:
-                    self.module.fail_json(msg=str("DATA required when HEADER requested"))
+                    self.module.fail_json(
+                        msg=str("DATA required when HEADER requested")
+                    )
 
         ### Specific for byte_match_set
         if self.method_suffix == 'byte_match_set':
-            self.kwargs['Updates'][0][self.matchtuple]['TargetString'] = module.params.get('target_string')
-            self.kwargs['Updates'][0][self.matchtuple]['PositionalConstraint'] = module.params.get('positional').upper()
+            self.kwargs['Updates'] \
+                       [0] \
+                       [self.matchtuple] \
+                       ['TargetString'] \
+                       = module.params.get('target_string')
+
+            self.kwargs['Updates'] \
+                       [0] \
+                       [self.matchtuple] \
+                       ['PositionalConstraint'] \
+                       = module.params.get('positional').upper()
 
         ### Specific for size_constraint_set
         if self.method_suffix == 'size_constraint_set':
-            self.kwargs['Updates'][0][self.matchtuple]['ComparisonOperator'] = module.params.get('comparison')
-            self.kwargs['Updates'][0][self.matchtuple]['Size'] = module.params.get('size')
+            self.kwargs['Updates'] \
+                       [0] \
+                       [self.matchtuple] \
+                       ['ComparisonOperator'] \
+                       = module.params.get('comparison')
+            
+            self.kwargs['Updates'] \
+            [0] \
+            [self.matchtuple] \
+            ['Size'] \
+            = module.params.get('size')
 
     def format_for_update(self, id):
         self.kwargs[self.matchsetid] = id
@@ -112,12 +194,16 @@ class Condition():
     def format_for_deletion(self, id, filters):
         result = []
         for filter in filters:
-            formatted_filters = {'ChangeToken': get_change_token(self.client),
-                                 'Updates': [{'Action': 'DELETE', self.matchtuple: filter}],
-                                 self.matchsetid: id
-                                 }
+            formatted_filters = {
+                'ChangeToken': get_change_token(self.client),
+                'Updates': [{
+                    'Action': 'DELETE',
+                    self.matchtuple: filter
+                }],
+                self.matchsetid: id
+            }
             result.append(formatted_filters)
-        return result        
+        return result
 
     def exists(self):
         return any(d['Name'] == self.name for d in self.list())
@@ -130,7 +216,7 @@ class Condition():
         try:
             return func(**params)
         except botocore.exceptions.ClientError as e:
-            self.module.fail_json(msg=str(e))            
+            self.module.fail_json(msg=str(e))
 
     def delete(self, id):
         params = dict()
@@ -146,12 +232,22 @@ class Condition():
         func = getattr(self.client, 'get_' + self.method_suffix)
         return func(**params)[self.matchset]
 
+    def get_by_name(self):
+        existing = self.list()
+        us = [c['IPSetId'] for c in existing if c['Name'] == self.name]
+        if not us: 
+            return False
+
+        return self.get(us[0])
+
     def list(self):
         func = getattr(self.client, 'list_' + self.method_suffix + 's')
         return func(Limit=10)[self.matchsets]
 
     def find_and_delete(self):
-        id = [c[self.matchsetid] for c in self.list() if c['Name'] == self.name][0]
+        id = [c[self.matchsetid] for c in self.list()
+              if c['Name'] == self.name][0]
+
         current_filters = self.get(id)[self.matchtuples]
         result = []
         for filter in self.format_for_deletion(id, current_filters):
@@ -169,9 +265,19 @@ class Condition():
             self.module.fail_json(msg=str(e))
 
     def find_and_update_filter(self):
-        id = [c[self.matchsetid] for c in self.list() if c['Name'] == self.name][0]
+        discovered = [c[self.matchsetid] for c in self.list()
+                     if c['Name'] == self.name]
+
+        if not discovered:
+            # Condition exists but it has no entries
+            return False, False
+        
+        id = discovered[0]
+
         current_filters = self.get(id)[self.matchtuples]
-        if self.has_matching_filter(current_filters, self.format_for_update(id)):
+        if self.has_matching_filter(current_filters,
+            self.format_for_update(id)
+        ):
             if self.action == 'DELETE':
                 response = self.get(id)
                 self.update(id)
@@ -185,14 +291,18 @@ class Condition():
             return False, self.get(id)
 
     def has_matching_filter(self, current_filters, new_filters):
-        return [f for f in current_filters if f == new_filters['Updates'][0][self.matchtuple]]
+        return [f for f in current_filters
+                if f == new_filters['Updates'][0][self.matchtuple]]
 
     def update(self, id):
         func = getattr(self.client, 'update_' + self.method_suffix)
         try:
             return func(**self.format_for_update(id))
         except botocore.exceptions.ClientError as e:
-            self.module.fail_json(msg=str(e))    
+            self.module.fail_json(msg=str(e))
+
+    def find_existing_set(self):
+        pass
 
 
 class Rule:
@@ -203,9 +313,20 @@ class Rule:
         self.client = client
         self.module = module
         self.changed = False
-
-        self.condition_types = {'ip': 'IPMatch', 'byte': 'ByteMatch', 'sql': 'SqlInjectionMatch', 'size': 'SizeConstraint', 'xss': 'XssMatch'}
-        self.list_methods = {'ip': 'list_ip_sets', 'byte': 'list_byte_match_sets', 'sql': 'list_sql_injection_match_sets', 'size': 'list_size_constraint_sets', 'xss': 'list_xss_match_sets' }
+        self.condition_types = {
+            'ip': 'IPMatch',
+            'byte': 'ByteMatch',
+            'sql': 'SqlInjectionMatch',
+            'size': 'SizeConstraint',
+            'xss': 'XssMatch'
+        }
+        self.list_methods = {
+            'ip': 'list_ip_sets',
+            'byte': 'list_byte_match_sets',
+            'sql': 'list_sql_injection_match_sets',
+            'size': 'list_size_constraint_sets',
+            'xss': 'list_xss_match_sets'
+        }
 
         self.conditions = module.params.get('conditions')
         self.name = module.params.get('name')
@@ -223,11 +344,13 @@ class Rule:
         params = dict()
         params['Name'] = self.name
         params['MetricName'] = self.metric_name
-        params['ChangeToken'] = get_change_token(self.client)        
+        params['ChangeToken'] = get_change_token(self.client)
         return self.client.create_rule(**params)['Rule']
 
     def delete(self, id):
-        return self.client.delete_rule(RuleId=id, ChangeToken=get_change_token(self.client))
+        return self.client.delete_rule(
+            RuleId=id,
+            ChangeToken=get_change_token(self.client))
 
     def get(self, id):
         return self.client.get_rule(RuleId=id)['Rule']
@@ -239,18 +362,25 @@ class Rule:
         rule_id = self.get(id)['RuleId']
         predicates = self.get(id)['Predicates']
         q(predicates)
-        for condition in self.conditions:
-            func = getattr(self.client, self.list_methods[condition['type']])
-            list_results = func(Limit=99)
-            key_list = [list_results[key] for key in list_results if key.endswith('Sets')][0]
-            this_condition = [k for k in key_list if k['Name'] == condition['name']][0]
-            condition_id = [this_condition[key] for key in this_condition if key.endswith('SetId')][0]
-            q(condition_id)
-            if len(predicates) == 0 or self.action == "DELETE":
-                q("No existing predicates")
-                q(self.action)
-                self.update(rule_id, condition_id, condition['type'])
-                self.changed = True
+        if self.conditions:
+            for condition in self.conditions:
+                func = getattr(
+                    self.client,
+                    self.list_methods[condition['type']]
+                )
+                list_results = func(Limit=99)
+                key_list = [list_results[key] for key in list_results
+                            if key.endswith('Sets')][0]
+                this_condition = [k for k in key_list
+                                  if k['Name'] == condition['name']][0]
+                condition_id = [this_condition[key] for key in this_condition
+                                if key.endswith('SetId')][0]
+                q(condition_id)
+                if len(predicates) == 0 or self.action == "DELETE":
+                    q("No existing predicates")
+                    q(self.action)
+                    self.update(rule_id, condition_id, condition['type'])
+                    self.changed = True
         return self.changed, self.get(id)
 
     def get_condition(self, name):
@@ -317,13 +447,16 @@ class WebAcl():
             else:
                 return acls
         except botocore.exceptions.ClientError as e:
-            module.fail_json(msg=str(e))            
+            module.fail_json(msg=str(e))
 
     def get_rule_by_name(self, name):
         try:
             rules = self.client.list_rules(Limit=10)['Rules']
-            rule_id = [d['RuleId'] for d in rules if d['Name'] == name][0]
-            return self.client.get_rule(RuleId=rule_id)['Rule']
+            if rules:
+                rule_id = [d['RuleId'] for d in rules if d['Name'] == name][0]
+                return self.client.get_rule(RuleId=rule_id)['Rule']
+            else:
+                return None
         except botocore.exceptions.ClientError as e:
             module.fail_json(msg=str(e))
 
@@ -342,7 +475,11 @@ class WebAcl():
 
     def delete(self, id):
         try:
-            return True, self.client.delete_web_acl(WebACLId=id, ChangeToken=get_change_token(self.client))
+            return True, self.client.delete_web_acl(WebACLId=id,
+                                                    ChangeToken= \
+                                                    get_change_token(
+                                                        self.client)
+                                                    )
         except botocore.exceptions.ClientError as e:
             module.fail_json(msg=str(e))            
 
@@ -364,7 +501,9 @@ class WebAcl():
         result = list()
         for rule in self.rules:
             existing_rule = self.get_rule_by_name(rule['name'])
-            self.update(rule, acl, existing_rule)
+            if existing_rule:
+                self.update(rule, acl, existing_rule)
+
         changed = True
         return changed, result
 
@@ -436,7 +575,9 @@ def create_web_acl(client, module):
     else:
         new_web_acl = web_acl.create()
         q(new_web_acl)
-        (changed, result) = web_acl.find_and_update(new_web_acl['WebACL']['WebACLId'])
+        (changed, result) = web_acl.find_and_update(
+            new_web_acl['WebACL']['WebACLId']
+        )
     return changed, result
 
 
@@ -484,9 +625,32 @@ def delete_rule(client, module):
 def create_condition(client, module):
     changed = False
     result = None
-    condition = Condition(conditions[module.params.get('type')], client, module)
+    condition = Condition(
+        conditions[module.params.get('type')],
+        client,
+        module
+    )
     if condition.exists():
-        q("Existing condition found so just doing an update or delete if required")
+        q("Existing condition found so just doing an \
+            update or delete if required")
+        existing_state = condition.get_by_name()
+        if existing_state:
+            existing_state_hash = hashlib.sha256(
+                json.dumps(existing_state[condition.matchtuples])
+            ).hexdigest()
+
+            new_state = [{
+                'Type': 'IPV4',
+                'Value': v
+            } for v in reversed(module.params.get('ip_addresses'))]
+
+            new_state_hash = hashlib.sha256(
+                json.dumps(new_state)
+            ).hexdigest()
+
+            equal_states = new_state_hash == existing_state_hash
+            module.fail_json(msg=json.dumps(equal_states))
+        module.fail_json(msg=json.dumps(existing_state))
         (changed, result) = condition.find_and_update_filter()
         return changed, result
     else:
@@ -499,7 +663,11 @@ def create_condition(client, module):
 def delete_condition(client, module):
     changed = False
     result = None
-    condition = Condition(conditions[module.params.get('type')], client, module)
+    condition = Condition(
+        conditions[module.params.get('type')],
+        client,
+        module
+    )
     if condition.exists():
         (changed, result) = condition.find_and_delete()
     return changed, result
@@ -529,10 +697,10 @@ def main():
         waf_type=dict(default=None, required=True,
                       choices=['web_acl', 'rule', 'condition']),
         type=dict(default=None, required=False,
-                       choices=['xss', 'byte', 'size', 'sql', 'ip']),   # to upper()
-        action=dict(default=None, required=False,                       # to upper()
+                       choices=['xss', 'byte', 'size', 'sql', 'ip']),
+        action=dict(default=None, required=False,
                     choices=['insert', 'delete']),
-        field_match=dict(default=None, required=False,                  # to upper()
+        field_match=dict(default=None, required=False,
                          choices=['uri', 'query_string', 'header',
                                   'method', 'body']),
         header_data=dict(default=None, required=False,
@@ -559,7 +727,7 @@ def main():
         state=dict(default='present', choices=['present', 'absent']),
         target_string=dict(type='str', required=False),  # Bytes
         size=dict(required=False, type='int'),
-        ip_address=dict(type='str', required=False),
+        ip_addresses=dict(type='list', required=False),
         negated=dict(type='bool', required=False),
         conditions=dict(type='list', require=False),
         rules=dict(type='list', require=False)
@@ -572,8 +740,19 @@ def main():
         module.fail_json(msg='json and boto3 are required.')
     state = module.params.get('state').lower()
     try:
-        region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module, boto3=True)
-        client = boto3_conn(module, conn_type='client', resource='waf', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+        region, ec2_url, aws_connect_kwargs = get_aws_connection_info(
+            module,
+            boto3=True
+        )
+
+        client = boto3_conn(module,
+            conn_type='client',
+            resource='waf',
+            region=region,
+            endpoint=ec2_url,
+            **aws_connect_kwargs
+        )
+
     except botocore.exceptions.NoCredentialsError, e:
         module.fail_json(msg="Can't authorize connection - "+str(e))
 
